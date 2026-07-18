@@ -1,0 +1,6 @@
+{
+  "name": "TravelGo.AI",
+  "description": "An intelligent conversational AI travel planning assistant that creates personalized day-wise itineraries, budget estimates, packing checklists, and recommendations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
