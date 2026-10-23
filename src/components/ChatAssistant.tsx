@@ -2,13 +2,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Send, User, Bot, Sparkles, MapPin, IndianRupee, Calendar, Users, Briefcase, 
-  Trash2, Copy, Eye, History, ArrowLeft, RefreshCw, X, HelpCircle, Compass
+  Trash2, Copy, Eye, History, ArrowLeft, RefreshCw, X, HelpCircle, Compass,
+  Check, Pencil, AlertTriangle
 } from 'lucide-react';
-import { ChatMessage, TravelParams, SavedTrip } from '../types';
+import { ChatMessage, TravelParams, SavedTrip, TravelPlan } from '../types';
 
 interface ChatAssistantProps {
   onBack: () => void;
-  onPlanGenerated: (plan: any) => void;
+  onPlanGenerated: (plan: TravelPlan, tripId: string, params: TravelParams) => void;
   savedTrips: SavedTrip[];
   onSelectTrip: (trip: SavedTrip) => void;
   onDeleteTrip: (id: string) => void;
@@ -38,6 +39,11 @@ export default function ChatAssistant({
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [capturedParams, setCapturedParams] = useState<TravelParams>({});
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const generatingRef = useRef(false);
+  const tripIdRef = useRef<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -49,7 +55,7 @@ export default function ChatAssistant({
   // Auto-scroll messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, awaitingConfirmation, isGenerating, generationError]);
 
   // Handle predefined choices clicked on the landing page
   useEffect(() => {
@@ -59,63 +65,87 @@ export default function ChatAssistant({
     }
   }, [predefinedParams]);
 
-  // Immediate generation helper for predefined trips
-  const handlePredefinedPlan = async (params: Partial<TravelParams>) => {
-    setIsLoading(true);
-    // Add artificial user message and bot response
+  const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const addBotMessage = (content: string) => {
+    setMessages(prev => [...prev, { id: `bot-msg-${Date.now()}`, role: 'assistant', content, timestamp: nowTime() }]);
+  };
+
+  // Predefined trips already contain every detail, so go straight to confirmation
+  const handlePredefinedPlan = (params: Partial<TravelParams>) => {
     const userMsg: ChatMessage = {
       id: `predef-user-${Date.now()}`,
       role: 'user',
       content: `Create my customized plan for ${params.destination} with a budget of ${params.budget || 'any'} for ${params.duration} days, ${params.travelers} traveler(s), aiming for ${params.experience?.join(", ") || "General"} experience style.`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      timestamp: nowTime()
     };
-    
-    setMessages(prev => [...prev, userMsg]);
+    const botMsg: ChatMessage = {
+      id: `predef-bot-${Date.now()}`,
+      role: 'assistant',
+      content: "Great choice! Please review your trip details below and click OK to generate your itinerary.",
+      timestamp: nowTime()
+    };
+    setMessages(prev => [...prev, userMsg, botMsg]);
+    tripIdRef.current = null;
+    setGenerationError(null);
+    setAwaitingConfirmation(true);
+  };
+
+  // Generates the itinerary for the confirmed trip details (guarded against double clicks)
+  const handleConfirmTrip = async () => {
+    if (generatingRef.current) return;
+    generatingRef.current = true;
+    if (!tripIdRef.current) tripIdRef.current = `trip-${Date.now()}`;
+    const tripId = tripIdRef.current;
+    const confirmedParams = { ...capturedParams };
+
+    setGenerationError(null);
+    setIsGenerating(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/api/itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMsg],
-          currentParams: params
-        })
+        body: JSON.stringify({ params: confirmedParams })
       });
+      const data = await response.json().catch(() => ({}));
 
-      const data = await response.json();
-      if (data.isComplete && data.travelPlan) {
-        onPlanGenerated(data.travelPlan);
-      } else {
-        const botMsg: ChatMessage = {
-          id: `bot-msg-${Date.now()}`,
-          role: 'assistant',
-          content: data.reply || (data.error ? `⚠️ ${data.error}: ${data.details || ''}` : "Let me analyze your preferences and generate the itinerary..."),
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        };
-        setMessages(prev => [...prev, botMsg]);
-        if (data.collectedData) {
-          setCapturedParams(data.collectedData);
-        }
+      if (response.ok && data.travelPlan) {
+        onPlanGenerated(data.travelPlan, tripId, confirmedParams);
+        return;
       }
+
+      if (data.error === 'MISSING_TRIP_DETAILS') {
+        setAwaitingConfirmation(false);
+        addBotMessage(data.message || "Some trip details are missing. Could you provide them?");
+        return;
+      }
+
+      setGenerationError(data.message || "Itinerary generation failed. Please try again.");
     } catch (err: any) {
-      console.error(err);
-      const botMsg: ChatMessage = {
-        id: `bot-err-${Date.now()}`,
-        role: 'assistant',
-        content: `⚠️ Failed to connect to Gemma service: ${err?.message || "Server unreachable"}. Please verify Ollama is active.`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-      setMessages(prev => [...prev, botMsg]);
+      console.error("Itinerary API error:", err);
+      setGenerationError("Could not reach the TravelGo.AI server. Please make sure it is running and try again.");
     } finally {
-      setIsLoading(false);
+      generatingRef.current = false;
+      setIsGenerating(false);
     }
+  };
+
+  const handleEditDetails = () => {
+    setAwaitingConfirmation(false);
+    setGenerationError(null);
+    tripIdRef.current = null;
+    addBotMessage("Sure! Tell me what you'd like to change — destination, budget, duration, travelers or experience.");
   };
 
   const handleSend = async (textToSend?: string) => {
     const text = (textToSend || inputText).trim();
-    if (!text) return;
+    if (!text || isGenerating) return;
 
     setInputText('');
+    setAwaitingConfirmation(false);
+    setGenerationError(null);
+    tripIdRef.current = null;
 
     const newUserMsg: ChatMessage = {
       id: `user-msg-${Date.now()}`,
@@ -158,11 +188,9 @@ export default function ChatAssistant({
       };
       setMessages(prev => [...prev, botMsg]);
 
-      // If planning is completed, trigger callback
-      if (data.isComplete && data.travelPlan) {
-        setTimeout(() => {
-          onPlanGenerated(data.travelPlan);
-        }, 1200); // short delay to read the exciting completion reply
+      // All details collected: ask the user to confirm before generating the itinerary
+      if (data.isComplete) {
+        setAwaitingConfirmation(true);
       }
 
     } catch (err: any) {
@@ -339,6 +367,13 @@ export default function ChatAssistant({
                     >
                       <Copy size={13} />
                     </button>
+                    <button
+                      title="Delete Plan"
+                      onClick={() => onDeleteTrip(trip.id)}
+                      className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-rose-400 cursor-pointer"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -385,6 +420,65 @@ export default function ChatAssistant({
               </motion.div>
             ))}
           </AnimatePresence>
+
+          {/* Trip Confirmation Card */}
+          {awaitingConfirmation && !isLoading && (
+            <motion.div
+              id="trip-confirmation-card"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex gap-3.5 max-w-[85%]"
+            >
+              <div className="h-9 w-9 shrink-0 rounded-xl flex items-center justify-center bg-emerald-600/20 text-emerald-400 border border-emerald-500/20">
+                <Sparkles size={16} />
+              </div>
+              <div className="glass-dark rounded-2xl rounded-tl-none border border-emerald-500/20 shadow-md p-4 text-left text-sm space-y-3 w-full max-w-md">
+                <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">Confirm your trip</p>
+                <div className="space-y-2 text-slate-300">
+                  <div className="flex items-center gap-2"><MapPin size={14} className="text-slate-500" /> {capturedParams.destination}</div>
+                  <div className="flex items-center gap-2"><IndianRupee size={14} className="text-slate-500" /> {capturedParams.budget} total budget</div>
+                  <div className="flex items-center gap-2"><Calendar size={14} className="text-slate-500" /> {capturedParams.duration} Days</div>
+                  <div className="flex items-center gap-2"><Users size={14} className="text-slate-500" /> {capturedParams.travelers} {(capturedParams.travelers || 0) > 1 ? 'People' : 'Person'}</div>
+                  <div className="flex items-center gap-2"><Briefcase size={14} className="text-slate-500" /> {capturedParams.experience?.join(', ')}</div>
+                </div>
+
+                {isGenerating && (
+                  <div className="flex items-center gap-2 text-xs text-emerald-300 bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
+                    <RefreshCw size={13} className="animate-spin" />
+                    Generating your itinerary with Gemma… this can take a minute or two.
+                  </div>
+                )}
+
+                {generationError && !isGenerating && (
+                  <div className="flex items-start gap-2 text-xs text-rose-300 bg-rose-500/5 border border-rose-500/20 rounded-xl px-3 py-2">
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                    <span>{generationError} Your trip details are kept — you can retry.</span>
+                  </div>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    id="btn-confirm-trip"
+                    onClick={handleConfirmTrip}
+                    disabled={isGenerating}
+                    className="flex items-center gap-1.5 text-xs font-bold px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
+                  >
+                    {generationError ? <RefreshCw size={13} /> : <Check size={13} />}
+                    {isGenerating ? 'Generating…' : generationError ? 'Retry' : 'OK, Generate Itinerary'}
+                  </button>
+                  <button
+                    id="btn-edit-trip"
+                    onClick={handleEditDetails}
+                    disabled={isGenerating}
+                    className="flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:border-slate-700 disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
+                  >
+                    <Pencil size={13} />
+                    Edit Details
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
           {/* Typing Loading Indicator */}
           {isLoading && (
@@ -434,16 +528,16 @@ export default function ChatAssistant({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSend();
+              if (e.key === 'Enter' && !isLoading) handleSend();
             }}
             placeholder="Type your travel preferences naturally... (e.g., 'Goa for 5 days under 40k')"
-            disabled={isLoading}
+            disabled={isLoading || isGenerating}
             className="flex-grow rounded-xl bg-slate-900 border border-slate-800 px-4 py-3.5 text-sm focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-60"
           />
           <button
             id="btn-chat-send"
             onClick={() => handleSend()}
-            disabled={!inputText.trim() || isLoading}
+            disabled={!inputText.trim() || isLoading || isGenerating}
             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 disabled:bg-slate-900 disabled:text-slate-600 transition-all cursor-pointer shadow-lg hover:scale-105 active:scale-95 disabled:scale-100"
           >
             <Send size={18} />

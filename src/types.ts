@@ -106,4 +106,5 @@ export interface SavedTrip {
   id: string;
   plan: TravelPlan;
   createdAt: string;
+  params?: TravelParams; // trip details confirmed in the chat
 }

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   ArrowLeft, Calendar, IndianRupee, MapPin, Users, Sparkles, Check, CheckSquare, 
   Square, AlertTriangle, CloudSun, Compass, ShieldAlert, Navigation, Info, 
-  HelpCircle, Download, Copy, Share2, Eye
+  HelpCircle, Download, Copy, Share2, Eye, Printer
 } from 'lucide-react';
 import { TravelPlan, PackingCategory, PackingItem } from '../types';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
@@ -50,7 +50,8 @@ export default function TravelDashboard({ plan, onBackToChat, onSaveToLocal }: T
   };
 
   return (
-    <div id="travel-dashboard-container" className="min-h-[calc(100vh-60px)] bg-slate-950 text-white font-sans overflow-y-auto pb-16 px-4 md:px-8 pt-8">
+    <>
+    <div id="travel-dashboard-container" className="print:hidden min-h-[calc(100vh-60px)] bg-slate-950 text-white font-sans overflow-y-auto pb-16 px-4 md:px-8 pt-8">
       
         {/* Dashboard Top Navigation & Status */}
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
@@ -87,6 +88,14 @@ export default function TravelDashboard({ plan, onBackToChat, onSaveToLocal }: T
           >
             <Sparkles size={14} />
             Save Trip to History
+          </button>
+          <button
+            id="btn-print-itinerary"
+            onClick={() => window.print()}
+            className="flex items-center gap-2 text-xs font-semibold px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 hover:border-slate-700 hover:text-emerald-400 transition-all cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Printer size={14} />
+            Print Itinerary
           </button>
         </div>
       </div>
@@ -658,6 +667,96 @@ export default function TravelDashboard({ plan, onBackToChat, onSaveToLocal }: T
 
 
 
+    </div>
+    <PrintableItinerary plan={plan} />
+    </>
+  );
+}
+
+// Print-only layout: the full itinerary (all days and sections) in a printer-friendly format
+function PrintableItinerary({ plan }: { plan: TravelPlan }) {
+  const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+  const section = "mt-6 break-inside-avoid";
+  const heading = "text-lg font-bold border-b border-slate-300 pb-1 mb-2";
+  const list = (items: string[]) => (
+    <ul className="list-disc pl-5 space-y-0.5">{items.map((t, i) => <li key={i}>{t}</li>)}</ul>
+  );
+
+  return (
+    <div id="printable-itinerary" className="hidden print:block bg-white text-black text-sm p-6 text-left">
+      <h1 className="text-2xl font-extrabold">TravelGo.AI — Trip to {plan.destination}</h1>
+      <p className="mt-1">
+        {plan.duration} Days · {plan.travelers} {plan.travelers > 1 ? 'People' : 'Person'} · Budget {inr(plan.budget)} · {plan.experience.join(', ')}
+      </p>
+      <p className="text-xs text-slate-600 mt-1">AI-generated plan. All costs are estimates; prices, availability and bookings have not been verified.</p>
+
+      <div className={section}>
+        <h2 className={heading}>Day-wise Itinerary</h2>
+        {plan.itinerary.map((day) => (
+          <div key={day.day} className="mb-3 break-inside-avoid">
+            <h3 className="font-bold">Day {day.day}: {day.title} <span className="font-normal">({inr(day.dailyExpense)})</span></h3>
+            {(['morning', 'afternoon', 'evening'] as const).map((slot) => (
+              <p key={slot} className="pl-3">
+                <span className="font-semibold capitalize">{slot}:</span> {day[slot].activity} — {day[slot].attraction}. Food: {day[slot].food}
+              </p>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div className={section}>
+        <h2 className={heading}>Budget Estimate</h2>
+        <table className="w-full max-w-md">
+          <tbody>
+            {([
+              ['Transport', plan.budgetBreakdown.transport],
+              ['Hotel', plan.budgetBreakdown.hotel],
+              ['Food', plan.budgetBreakdown.food],
+              ['Activities', plan.budgetBreakdown.activities],
+              ['Shopping', plan.budgetBreakdown.shopping],
+              ['Emergency', plan.budgetBreakdown.emergency],
+              ['Estimated Cost', plan.budgetBreakdown.estimatedCost],
+              ['Remaining Budget', plan.budgetBreakdown.remainingBudget],
+            ] as [string, number][]).map(([label, value]) => (
+              <tr key={label}><td className="pr-6">{label}</td><td className="text-right">{inr(value)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {plan.restaurants.length > 0 && (
+        <div className={section}>
+          <h2 className={heading}>Restaurants & Food</h2>
+          {list(plan.restaurants.map(r => `${r.name} (${r.cuisine}, ${r.priceRange}) — must try: ${r.mustTry}`))}
+          {list(plan.mustTryFoods.map(f => `${f.name}: ${f.description}`))}
+        </div>
+      )}
+
+      {plan.hiddenGems.length > 0 && (
+        <div className={section}>
+          <h2 className={heading}>Hidden Gems</h2>
+          {list(plan.hiddenGems.map(g => `${g.name}: ${g.description}`))}
+        </div>
+      )}
+
+      <div className={section}>
+        <h2 className={heading}>Travel Tips</h2>
+        <p><span className="font-semibold">Weather:</span> {plan.weatherAdvice}</p>
+        <p><span className="font-semibold">Best visiting hours:</span> {plan.bestVisitingHours}</p>
+        {plan.transportationTips.length > 0 && <><p className="font-semibold mt-2">Transportation</p>{list(plan.transportationTips)}</>}
+        {plan.safetyTips.length > 0 && <><p className="font-semibold mt-2">Safety</p>{list(plan.safetyTips)}</>}
+        {plan.scamsToAvoid.length > 0 && <><p className="font-semibold mt-2">Scams to avoid</p>{list(plan.scamsToAvoid)}</>}
+        {plan.moneySavingTips.length > 0 && <><p className="font-semibold mt-2">Money-saving tips</p>{list(plan.moneySavingTips)}</>}
+      </div>
+
+      {plan.packingList.length > 0 && (
+        <div className={section}>
+          <h2 className={heading}>Packing List</h2>
+          {plan.packingList.map((cat, i) => (
+            <p key={i}><span className="font-semibold">{cat.category}:</span> {cat.items.map(it => it.name).join(', ')}</p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
