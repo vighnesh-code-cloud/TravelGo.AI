@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import LandingPage from './components/LandingPage';
 import ChatAssistant from './components/ChatAssistant';
@@ -16,47 +16,50 @@ function AppContent() {
   const [activePlan, setActivePlan] = useState<TravelPlan | null>(null);
   const [predefinedParams, setPredefinedParams] = useState<Partial<TravelParams> | null>(null);
 
+  const [activeTripId, setActiveTripId] = useState<string | null>(null);
+  const savedTripsRef = useRef<SavedTrip[]>([]);
+
+  const persistTrips = (updated: SavedTrip[]) => {
+    savedTripsRef.current = updated;
+    setSavedTrips(updated);
+    try {
+      localStorage.setItem('travelgo_trips', JSON.stringify(updated));
+    } catch (err) {
+      console.error("Failed to write trips to local storage:", err);
+      alert("Could not save to local history (browser storage may be full).");
+    }
+  };
+
   // Load saved trips from local storage on mount and clean up demo/sample data
   useEffect(() => {
     const stored = localStorage.getItem('travelgo_trips');
     if (stored) {
       try {
         const parsed: SavedTrip[] = JSON.parse(stored);
-        
-        // Filter out any hardcoded/demo trips from past loads
-        const demoDestinations = [
-          'delhi', 'manali', 'goa', 'jaipur', 'kerala', 'shimla', 
-          'mumbai', 'agra', 'ooty', 'leh ladakh', 'leh', 'ladakh', 'demo'
-        ];
-        
+        if (!Array.isArray(parsed)) return;
+
         const filtered = parsed.filter(trip => {
           if (!trip || !trip.plan || !trip.plan.destination) return false;
-          
-          const destinationLower = trip.plan.destination.toLowerCase();
+
           const idLower = String(trip.id).toLowerCase();
-          
+
           // Check if ID contains 'demo' or 'sample'
           if (idLower.includes('demo') || idLower.includes('sample')) {
             return false;
           }
-          
+
           // Check if ID is a simple short number (like '1', '2', '10' etc. or 'trip-1')
           const numericPart = idLower.replace('trip-', '').replace('trip-dup-', '');
           if (numericPart.length < 8 && !isNaN(Number(numericPart))) {
             return false;
           }
-          
-          // Check if destination matches any known demo cities
-          const isDemoCity = demoDestinations.some(city => destinationLower.includes(city));
-          if (isDemoCity) {
-            return false;
-          }
-          
+
           return true;
         });
 
+        savedTripsRef.current = filtered;
         setSavedTrips(filtered);
-        
+
         // Update local storage to persist the filtered non-demo list
         if (filtered.length !== parsed.length) {
           localStorage.setItem('travelgo_trips', JSON.stringify(filtered));
@@ -67,13 +70,16 @@ function AppContent() {
     }
   }, []);
 
-  // Save trips to local storage
-  const handleSaveTrip = (plan: TravelPlan) => {
-    const exists = savedTrips.some(t => 
-      t.plan.destination === plan.destination && 
-      t.plan.duration === plan.duration && 
-      t.plan.budget === plan.budget
-    );
+  // Save trips to local storage. A trip is saved at most once per tripId.
+  const handleSaveTrip = (plan: TravelPlan, options: { tripId?: string | null; params?: TravelParams } = {}) => {
+    const current = savedTripsRef.current;
+    const exists = options.tripId
+      ? current.some(t => t.id === options.tripId)
+      : current.some(t =>
+          t.plan.destination === plan.destination &&
+          t.plan.duration === plan.duration &&
+          t.plan.budget === plan.budget
+        );
 
     if (exists) {
       alert("This travel plan is already saved in your history!");
@@ -81,23 +87,22 @@ function AppContent() {
     }
 
     const newTrip: SavedTrip = {
-      id: `trip-${Date.now()}`,
+      id: options.tripId || `trip-${Date.now()}`,
       plan,
-      createdAt: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      createdAt: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+      ...(options.params ? { params: options.params } : {})
     };
 
-    const updated = [newTrip, ...savedTrips];
-    setSavedTrips(updated);
-    localStorage.setItem('travelgo_trips', JSON.stringify(updated));
+    persistTrips([newTrip, ...current]);
+    setActiveTripId(newTrip.id);
     alert("🎉 Travel plan successfully saved to your local history!");
   };
 
   const handleDeleteTrip = (id: string) => {
     try {
       if (confirm("Are you sure you want to delete this saved trip?")) {
-        const updated = savedTrips.filter(t => t.id !== id);
-        setSavedTrips(updated);
-        localStorage.setItem('travelgo_trips', JSON.stringify(updated));
+        persistTrips(savedTripsRef.current.filter(t => t.id !== id));
+        if (activeTripId === id) setActiveTripId(null);
         alert("Trip deleted successfully.");
       }
     } catch (err) {
@@ -108,6 +113,7 @@ function AppContent() {
 
   const handleDuplicateTrip = (trip: SavedTrip) => {
     const duplicated: SavedTrip = {
+      ...trip,
       id: `trip-dup-${Date.now()}`,
       plan: {
         ...trip.plan,
@@ -116,14 +122,13 @@ function AppContent() {
       createdAt: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
     };
 
-    const updated = [duplicated, ...savedTrips];
-    setSavedTrips(updated);
-    localStorage.setItem('travelgo_trips', JSON.stringify(updated));
+    persistTrips([duplicated, ...savedTripsRef.current]);
     alert("📑 Duplicated successfully!");
   };
 
   const handleSelectTripFromHistory = (trip: SavedTrip) => {
     setActivePlan(trip.plan);
+    setActiveTripId(trip.id);
     setScreen('dashboard');
   };
 
@@ -162,10 +167,10 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white font-sans overflow-x-hidden">
+    <div className="min-h-screen bg-slate-950 text-white font-sans overflow-x-hidden print:bg-white print:text-black">
       
       {/* Navigation Bar */}
-      <nav id="nav-primary" className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-b border-slate-900/60 px-6 py-4 flex items-center justify-between">
+      <nav id="nav-primary" className="print:hidden sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-b border-slate-900/60 px-6 py-4 flex items-center justify-between">
         <div 
           onClick={() => setScreen('landing')}
           className="flex items-center gap-2.5 cursor-pointer select-none"
@@ -286,10 +291,10 @@ function AppContent() {
           >
             <ChatAssistant 
               onBack={() => setScreen('landing')}
-              onPlanGenerated={(plan) => {
+              onPlanGenerated={(plan, tripId, params) => {
                 setActivePlan(plan);
                 // Also automatically save the plan to trip history so the user never loses their generated plan!
-                handleSaveTrip(plan);
+                handleSaveTrip(plan, { tripId, params });
                 setScreen('dashboard');
               }}
               savedTrips={savedTrips}
@@ -311,7 +316,7 @@ function AppContent() {
             <TravelDashboard 
               plan={activePlan}
               onBackToChat={() => setScreen('chat')}
-              onSaveToLocal={handleSaveTrip}
+              onSaveToLocal={(plan) => handleSaveTrip(plan, { tripId: activeTripId })}
             />
           </motion.div>
         )}
@@ -327,6 +332,7 @@ function AppContent() {
               savedTrips={savedTrips}
               onSelectTrip={handleSelectTripFromHistory}
               onDuplicateTrip={handleDuplicateTrip}
+              onDeleteTrip={handleDeleteTrip}
               onBack={() => setScreen('landing')}
               onPlanTrip={handlePlanTripWithAuth}
             />

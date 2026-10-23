@@ -10,6 +10,7 @@ interface TripHistoryProps {
   savedTrips: SavedTrip[];
   onSelectTrip: (trip: SavedTrip) => void;
   onDuplicateTrip: (trip: SavedTrip) => void;
+  onDeleteTrip: (id: string) => void;
   onBack: () => void;
   onPlanTrip: () => void;
 }
@@ -18,6 +19,7 @@ export default function TripHistory({
   savedTrips, 
   onSelectTrip, 
   onDuplicateTrip, 
+  onDeleteTrip,
   onBack,
   onPlanTrip
 }: TripHistoryProps) {
@@ -215,6 +217,13 @@ export default function TripHistory({
                       className="p-2 rounded-lg bg-slate-950 border border-slate-850 hover:border-slate-700 text-slate-400 hover:text-blue-400 transition-colors cursor-pointer"
                     >
                       <Copy size={14} />
+                    </button>
+                    <button
+                      title="Delete Trip"
+                      onClick={() => onDeleteTrip(trip.id)}
+                      className="p-2 rounded-lg bg-slate-950 border border-slate-850 hover:border-slate-700 text-slate-400 hover:text-rose-400 transition-colors cursor-pointer"
+                    >
+                      <Trash2 size={14} />
                     </button>
                   </div>
                 </div>
