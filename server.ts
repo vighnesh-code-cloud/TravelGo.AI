@@ -13,7 +13,7 @@ app.use(express.json());
 
 // Gemma / Ollama Configuration
 const GEMMA_API_URL = (process.env.GEMMA_API_URL || process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
-const GEMMA_MODEL = process.env.GEMMA_MODEL || "gemma2";
+const GEMMA_MODEL = process.env.GEMMA_MODEL || "gemma3:4b";
 const GEMMA_API_KEY = process.env.GEMMA_API_KEY || "";
 
 console.log(`[Gemma AI] Initialized configuration: URL=${GEMMA_API_URL}, Model=${GEMMA_MODEL}`);
@@ -433,5 +433,5 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`TravelGo.AI Server running on http://0.0.0.0:${PORT}`);
+  console.log(`TravelGo.AI Server running at http://localhost:${PORT}`);
 });
