@@ -30,7 +30,7 @@ export default function ChatAssistant({
     {
       id: 'welcome',
       role: 'assistant',
-      content: "👋 Hi! I'm your AI Travel Assistant from TravelGo.AI. Where would you like to travel?",
+      content: "👋 Hi! I'm your AI Travel Assistant from TravelGo.AI powered by Gemma. Where would you like to travel? (e.g., Goa, Kyoto, Swiss Alps, Ladakh)",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -86,11 +86,10 @@ export default function ChatAssistant({
       if (data.isComplete && data.travelPlan) {
         onPlanGenerated(data.travelPlan);
       } else {
-        // Fallback or next step if somehow incomplete
         const botMsg: ChatMessage = {
           id: `bot-msg-${Date.now()}`,
           role: 'assistant',
-          content: data.reply || "Let me analyze your preferences and generate the itinerary...",
+          content: data.reply || (data.error ? `⚠️ ${data.error}: ${data.details || ''}` : "Let me analyze your preferences and generate the itinerary..."),
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
         setMessages(prev => [...prev, botMsg]);
@@ -98,8 +97,15 @@ export default function ChatAssistant({
           setCapturedParams(data.collectedData);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      const botMsg: ChatMessage = {
+        id: `bot-err-${Date.now()}`,
+        role: 'assistant',
+        content: `⚠️ Failed to connect to Gemma service: ${err?.message || "Server unreachable"}. Please verify Ollama is active.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, botMsg]);
     } finally {
       setIsLoading(false);
     }
@@ -134,7 +140,7 @@ export default function ChatAssistant({
 
       const data = await response.json();
 
-      // Update captured parameters in state
+      // Update captured parameters in state if present
       if (data.collectedData) {
         setCapturedParams(prev => ({
           ...prev,
@@ -143,10 +149,11 @@ export default function ChatAssistant({
       }
 
       // Add AI reply message
+      const replyContent = data.reply || (data.error ? `⚠️ ${data.error}: ${data.details || ''}` : "I'm having trouble processing that right now.");
       const botMsg: ChatMessage = {
         id: `bot-msg-${Date.now()}`,
         role: 'assistant',
-        content: data.reply,
+        content: replyContent,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages(prev => [...prev, botMsg]);
@@ -155,16 +162,15 @@ export default function ChatAssistant({
       if (data.isComplete && data.travelPlan) {
         setTimeout(() => {
           onPlanGenerated(data.travelPlan);
-        }, 1500); // short delay to read the exciting completion reply
+        }, 1200); // short delay to read the exciting completion reply
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Chat API error:", err);
-      // fallback in case of connection failure
       const botMsg: ChatMessage = {
         id: `bot-err-${Date.now()}`,
         role: 'assistant',
-        content: "⚠️ I had trouble processing that request. Please make sure the server is fully running or retry.",
+        content: `⚠️ Communication error: ${err?.message || "Failed to contact backend service"}. Please ensure the server is running.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages(prev => [...prev, botMsg]);

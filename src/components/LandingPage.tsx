@@ -505,7 +505,7 @@ export default function LandingPage({
           </div>
           <div className="flex gap-2 mt-4 md:mt-0">
             <span className="text-xs text-slate-500 flex items-center gap-1.5 border border-slate-800/60 rounded-full px-3 py-1 bg-slate-900/20">
-              <Sparkles size={12} className="text-emerald-400" /> Powered by Gemini-3.5-Flash
+              <Sparkles size={12} className="text-emerald-400" /> Powered by Gemma AI
             </span>
           </div>
         </div>

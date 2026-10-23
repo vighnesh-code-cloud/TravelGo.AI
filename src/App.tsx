@@ -4,10 +4,13 @@ import LandingPage from './components/LandingPage';
 import ChatAssistant from './components/ChatAssistant';
 import TravelDashboard from './components/TravelDashboard';
 import TripHistory from './components/TripHistory';
+import AuthModal from './components/AuthModal';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { TravelPlan, SavedTrip, TravelParams } from './types';
-import { Compass, History, MessageSquare } from 'lucide-react';
+import { Compass, User as UserIcon, LogOut, Sparkles } from 'lucide-react';
 
-export default function App() {
+function AppContent() {
+  const { user, isAuthenticated, signOut, openAuthModal } = useAuth();
   const [screen, setScreen] = useState<'landing' | 'chat' | 'dashboard' | 'history'>('landing');
   const [savedTrips, setSavedTrips] = useState<SavedTrip[]>([]);
   const [activePlan, setActivePlan] = useState<TravelPlan | null>(null);
@@ -124,14 +127,37 @@ export default function App() {
     setScreen('dashboard');
   };
 
-  const handleSelectPredefined = (destination: string, budget: string, duration: number, travelers: number, exp: string[]) => {
-    setPredefinedParams({
+  // Sign-in guard for trip planning
+  const handlePlanTripWithAuth = () => {
+    if (!isAuthenticated) {
+      openAuthModal(() => {
+        setPredefinedParams(null);
+        setScreen('chat');
+      });
+      return;
+    }
+    setPredefinedParams(null);
+    setScreen('chat');
+  };
+
+  const handleSelectPredefinedWithAuth = (destination: string, budget: string, duration: number, travelers: number, exp: string[]) => {
+    const params: Partial<TravelParams> = {
       destination,
       budget,
       duration,
       travelers,
       experience: exp
-    });
+    };
+
+    if (!isAuthenticated) {
+      openAuthModal(() => {
+        setPredefinedParams(params);
+        setScreen('chat');
+      });
+      return;
+    }
+
+    setPredefinedParams(params);
     setScreen('chat');
   };
 
@@ -154,7 +180,7 @@ export default function App() {
           </span>
         </div>
 
-        {/* Global Nav Links */}
+        {/* Global Nav Links & Auth Pill */}
         <div className="flex items-center gap-4">
           {screen !== 'landing' && (
             <div className="flex items-center gap-2.5">
@@ -193,6 +219,40 @@ export default function App() {
               </button>
             </div>
           )}
+
+          {/* User Auth Badge */}
+          {isAuthenticated && user ? (
+            <div className="flex items-center gap-2.5 pl-2 border-l border-slate-800">
+              <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-full py-1 px-2.5">
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt={user.name} className="w-5 h-5 rounded-full object-cover" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center">
+                    {user.name.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <span className="text-xs text-slate-200 font-medium hidden sm:inline max-w-[100px] truncate">
+                  {user.name}
+                </span>
+              </div>
+              <button
+                onClick={() => signOut()}
+                title="Sign out"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-900 transition-colors cursor-pointer"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          ) : (
+            <button
+              id="btn-nav-signin"
+              onClick={() => openAuthModal()}
+              className="flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-white py-1.5 px-3 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/60 hover:bg-slate-900 transition-all cursor-pointer"
+            >
+              <UserIcon size={13} className="text-emerald-400" />
+              <span>Sign In</span>
+            </button>
+          )}
         </div>
       </nav>
 
@@ -207,15 +267,9 @@ export default function App() {
             exit={{ opacity: 0 }}
           >
             <LandingPage 
-              onPlanTrip={() => {
-                setPredefinedParams(null);
-                setScreen('chat');
-              }}
-              onOpenChat={() => {
-                setPredefinedParams(null);
-                setScreen('chat');
-              }}
-              onSelectPredefined={handleSelectPredefined}
+              onPlanTrip={handlePlanTripWithAuth}
+              onOpenChat={handlePlanTripWithAuth}
+              onSelectPredefined={handleSelectPredefinedWithAuth}
               onOpenHistory={() => {
                 setScreen('history');
               }}
@@ -274,13 +328,24 @@ export default function App() {
               onSelectTrip={handleSelectTripFromHistory}
               onDuplicateTrip={handleDuplicateTrip}
               onBack={() => setScreen('landing')}
-              onPlanTrip={() => setScreen('chat')}
+              onPlanTrip={handlePlanTripWithAuth}
             />
           </motion.div>
         )}
 
       </AnimatePresence>
 
+      {/* Sign-in Modal Overlay */}
+      <AuthModal />
+
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }

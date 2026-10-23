@@ -1,7 +1,6 @@
 import express, { Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -12,238 +11,364 @@ const PORT = Number(process.env.PORT) || 3000;
 // Middleware
 app.use(express.json());
 
-// Initialize Gemini API client safely
-let aiInstance: GoogleGenAI | null = null;
-function getGenAI(): GoogleGenAI {
-  if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn("WARNING: GEMINI_API_KEY is not defined. Using dummy API key for startup.");
-    }
-    aiInstance = new GoogleGenAI({
-      apiKey: apiKey || "DUMMY_KEY",
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-  }
-  return aiInstance;
-}
+// Gemma / Ollama Configuration
+const GEMMA_API_URL = (process.env.GEMMA_API_URL || process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
+const GEMMA_MODEL = process.env.GEMMA_MODEL || "gemma2";
+const GEMMA_API_KEY = process.env.GEMMA_API_KEY || "";
 
-// System Instruction for the AI Travel Agent
-const SYSTEM_INSTRUCTION = `
-You are TravelGo.AI, a highly conversational, intelligent, and premium AI Travel Assistant.
-Your goal is to help the user plan their ultimate travel experience.
+console.log(`[Gemma AI] Initialized configuration: URL=${GEMMA_API_URL}, Model=${GEMMA_MODEL}`);
 
-First, analyze the user's messages and preceding conversation to extract these 5 essential travel parameters:
-1. Destination (city, country, region, e.g., "Paris", "Goa", "Japan")
-2. Budget (Total budget in ₹ INR, e.g., 50000)
+// System Instruction for Gemma AI Travel Agent
+const SYSTEM_INSTRUCTION = `You are TravelGo.AI, a conversational, intelligent, and premium AI Travel Assistant powered by the Gemma model.
+Your mission is to help the user plan their ultimate travel experience.
+
+Analyze the user's messages and preceding conversation to extract these 5 essential travel parameters:
+1. Destination (city, country, or region, e.g., "Paris", "Goa", "Kyoto", "Ladakh")
+2. Budget (Total budget in Indian Rupees ₹ INR, e.g., 50000)
 3. Duration (Number of days, e.g., 5)
 4. Travelers (Number of people, e.g., 2)
-5. Experience style (One or more of: Adventure, Beaches, Mountains, Nature, Food, Shopping, Luxury, Budget, Family, Solo, or custom ones)
+5. Experience style (One or more of: Adventure, Beaches, Mountains, Nature, Food, Shopping, Luxury, Budget, Family, Solo)
 
-CRITICAL BEHAVIOR:
-- If the user provides multiple parameters in their first message (e.g., "Plan a 5-day adventure trip for 2 in Goa under 40k"), immediately recognize and extract ALL of them. Do not ask redundant questions.
-- If some parameters are missing, ask for them naturally, warmly, and one-by-one. Keep your responses short, helpful, and filled with a "travel-buddy" passion.
-- Always use Indian Rupees (₹ INR) for budgets and estimates. If the user specifies a budget in another currency (e.g., USD or EUR), convert it to INR (1 USD ≈ 83 INR, 1 EUR ≈ 90 INR) and proceed.
-- Once you have successfully gathered or inferred all 5 parameters (or the user explicitly says "skip questions and plan for [destination]"), you MUST set "isComplete" to true and fully populate the "travelPlan" field with an incredibly detailed, high-fidelity, and realistic travel plan.
+CRITICAL RULES:
+- If the user provides multiple parameters in a message (e.g., "Plan a 5-day adventure trip for 2 in Goa under 40k"), extract ALL of them immediately. Do not ask redundant questions.
+- If any parameters are missing, ask for them naturally, warmly, and concisely. Keep responses engaging with a travel-buddy tone.
+- Always use Indian Rupees (₹ INR) for budgets and estimates. Convert foreign currencies if mentioned (1 USD ≈ 83 INR, 1 EUR ≈ 90 INR).
+- When ALL 5 parameters are collected (or the user explicitly says to skip questions and plan), set "isComplete" to true and generate a full, realistic "travelPlan".
+- If not all 5 parameters are collected yet, set "isComplete" to false, leave "travelPlan" as null, and provide a helpful "reply".
 
-GUIDELINES FOR GENERATING THE "travelPlan":
-1. Destinations: Recommend 2-3 specific locations/attractions within or near their main destination that fit their duration and experience style. Explain why they are recommended.
-2. Day-wise Itinerary: Provide a complete day-by-day schedule for the specified duration (up to a maximum of 14 days, even if they requested more, to avoid token limits).
-   - For each day, include a catchy title and detailed plans for Morning, Afternoon, and Evening. Specify a recommended attraction and food/dining spot for each time of day.
-   - Estimate a realistic "dailyExpense" in ₹ INR for activities, transport, and meals on that day.
-3. Budget Breakdown: This must be highly realistic! Break down the user's total budget into:
-   - transport: flights, trains, or local taxis
-   - hotel: accommodation cost for the duration
-   - food: meals, drinks, snacks
-   - activities: entry tickets, guide fees, tours
-   - shopping: souvenirs, local goods
-   - emergency: safety buffer
-   - The "estimatedCost" is the sum of these six categories. It MUST be less than or equal to the total budget.
-   - "remainingBudget" is totalBudget - estimatedCost.
-4. Smart Packing Checklist: Group items into logical categories (e.g., Clothing, Essentials, Electronics, Documents, Weather-specific). Ensure the items are personalized based on the destination's climate/weather and planned activities. Generate at least 15 items in total across 4-5 categories with random short IDs like "p1", "p2", etc., and set "packed" to false.
-5. AI Recommendations:
-   - Hidden gems: 2-3 lesser-known spots with details.
-   - Restaurants: 2-3 specific, real local dining places with their specialized cuisine, price level, and must-try dish.
-   - Must-try foods: 2-3 popular local dishes with mouth-watering descriptions.
-   - Safety, tourist scams, transport, and money-saving tips tailored specifically to that destination.
-   - Current typical weather advice and best visiting hours.
-
-Ensure all outputs in "travelPlan" are highly detailed and read like they were curated by a local expert, not generic templates.
-`;
-
-// Schema for Gemini JSON output
-const CHAT_RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    isComplete: {
-      type: Type.BOOLEAN,
-      description: "True if all 5 variables (destination, budget, duration, travelers, experience) have been successfully collected/inferred."
-    },
-    collectedData: {
-      type: Type.OBJECT,
-      properties: {
-        destination: { type: Type.STRING },
-        budget: { type: Type.STRING },
-        duration: { type: Type.INTEGER },
-        travelers: { type: Type.INTEGER },
-        experience: { type: Type.ARRAY, items: { type: Type.STRING } }
-      },
-      description: "Extract the parameter values recognized so far. Keep existing values if unchanged."
-    },
-    reply: {
-      type: Type.STRING,
-      description: "If isComplete is false, this is a friendly, concise, natural-sounding chat response asking for one or two missing variables. Include relevant travel emojis. If isComplete is true, this is a brief, exciting message introducing the finalized itinerary."
-    },
-    travelPlan: {
-      type: Type.OBJECT,
-      description: "Must be populated if and only if isComplete is true. Follow system instruction guidelines to generate a high-quality travel plan.",
-      properties: {
-        destination: { type: Type.STRING },
-        budget: { type: Type.INTEGER },
-        duration: { type: Type.INTEGER },
-        travelers: { type: Type.INTEGER },
-        experience: { type: Type.ARRAY, items: { type: Type.STRING } },
-        destinations: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              description: { type: Type.STRING },
-              reason: { type: Type.STRING },
-              matchingScore: { type: Type.INTEGER }
-            },
-            required: ["name", "description", "reason", "matchingScore"]
-          }
-        },
-        itinerary: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              day: { type: Type.INTEGER },
-              title: { type: Type.STRING },
-              morning: {
-                type: Type.OBJECT,
-                properties: {
-                  activity: { type: Type.STRING },
-                  attraction: { type: Type.STRING },
-                  food: { type: Type.STRING }
-                },
-                required: ["activity", "attraction", "food"]
-              },
-              afternoon: {
-                type: Type.OBJECT,
-                properties: {
-                  activity: { type: Type.STRING },
-                  attraction: { type: Type.STRING },
-                  food: { type: Type.STRING }
-                },
-                required: ["activity", "attraction", "food"]
-              },
-              evening: {
-                type: Type.OBJECT,
-                properties: {
-                  activity: { type: Type.STRING },
-                  attraction: { type: Type.STRING },
-                  food: { type: Type.STRING }
-                },
-                required: ["activity", "attraction", "food"]
-              },
-              dailyExpense: { type: Type.INTEGER }
-            },
-            required: ["day", "title", "morning", "afternoon", "evening", "dailyExpense"]
-          }
-        },
-        budgetBreakdown: {
-          type: Type.OBJECT,
-          properties: {
-            transport: { type: Type.INTEGER },
-            hotel: { type: Type.INTEGER },
-            food: { type: Type.INTEGER },
-            activities: { type: Type.INTEGER },
-            shopping: { type: Type.INTEGER },
-            emergency: { type: Type.INTEGER },
-            totalBudget: { type: Type.INTEGER },
-            estimatedCost: { type: Type.INTEGER },
-            remainingBudget: { type: Type.INTEGER }
-          },
-          required: ["transport", "hotel", "food", "activities", "shopping", "emergency", "totalBudget", "estimatedCost", "remainingBudget"]
-        },
-        packingList: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              category: { type: Type.STRING },
-              items: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    id: { type: Type.STRING },
-                    name: { type: Type.STRING },
-                    packed: { type: Type.BOOLEAN }
-                  },
-                  required: ["id", "name", "packed"]
-                }
-              }
-            },
-            required: ["category", "items"]
-          }
-        },
-        hiddenGems: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              description: { type: Type.STRING }
-            },
-            required: ["name", "description"]
-          }
-        },
-        restaurants: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              cuisine: { type: Type.STRING },
-              priceRange: { type: Type.STRING },
-              mustTry: { type: Type.STRING }
-            },
-            required: ["name", "cuisine", "priceRange", "mustTry"]
-          }
-        },
-        mustTryFoods: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              description: { type: Type.STRING }
-            },
-            required: ["name", "description"]
-          }
-        },
-        safetyTips: { type: Type.ARRAY, items: { type: Type.STRING } },
-        scamsToAvoid: { type: Type.ARRAY, items: { type: Type.STRING } },
-        transportationTips: { type: Type.ARRAY, items: { type: Type.STRING } },
-        weatherAdvice: { type: Type.STRING },
-        bestVisitingHours: { type: Type.STRING },
-        moneySavingTips: { type: Type.ARRAY, items: { type: Type.STRING } }
-      }
-    }
+REQUIRED JSON RESPONSE FORMAT:
+You MUST respond with valid JSON only. Do not add conversational text outside the JSON object.
+Schema:
+{
+  "isComplete": boolean,
+  "collectedData": {
+    "destination": string or null,
+    "budget": string or null,
+    "duration": number or null,
+    "travelers": number or null,
+    "experience": string[] or []
   },
-  required: ["isComplete", "collectedData", "reply"]
-};
+  "reply": string,
+  "travelPlan": null or {
+    "destination": string,
+    "budget": number,
+    "duration": number,
+    "travelers": number,
+    "experience": string[],
+    "destinations": [
+      {
+        "name": string,
+        "description": string,
+        "reason": string,
+        "matchingScore": number
+      }
+    ],
+    "itinerary": [
+      {
+        "day": number,
+        "title": string,
+        "morning": { "activity": string, "attraction": string, "food": string },
+        "afternoon": { "activity": string, "attraction": string, "food": string },
+        "evening": { "activity": string, "attraction": string, "food": string },
+        "dailyExpense": number
+      }
+    ],
+    "budgetBreakdown": {
+      "transport": number,
+      "hotel": number,
+      "food": number,
+      "activities": number,
+      "shopping": number,
+      "emergency": number,
+      "totalBudget": number,
+      "estimatedCost": number,
+      "remainingBudget": number
+    },
+    "packingList": [
+      {
+        "category": string,
+        "items": [
+          { "id": string, "name": string, "packed": false }
+        ]
+      }
+    ],
+    "hiddenGems": [
+      { "name": string, "description": string }
+    ],
+    "restaurants": [
+      { "name": string, "cuisine": string, "priceRange": string, "mustTry": string }
+    ],
+    "mustTryFoods": [
+      { "name": string, "description": string }
+    ],
+    "safetyTips": string[],
+    "scamsToAvoid": string[],
+    "transportationTips": string[],
+    "weatherAdvice": string,
+    "bestVisitingHours": string,
+    "moneySavingTips": string[]
+  }
+}`;
 
-// API Endpoint for Chat Analysis & Content Generation
+/**
+ * Helper to call Gemma through Ollama or OpenAI-compatible endpoint
+ */
+async function queryGemma(messages: Array<{ role: string; content: string }>, currentParams: any): Promise<string> {
+  const conversationTranscript = messages
+    .map(m => `${m.role === "user" ? "User" : "TravelGo.AI Assistant"}: ${m.content}`)
+    .join("\n\n");
+
+  const promptContent = `Current state of captured travel parameters:
+${JSON.stringify(currentParams || {}, null, 2)}
+
+Full conversation history:
+${conversationTranscript}
+
+Now analyze this history, update the captured parameters, determine if all 5 are present, and output the required JSON. Remember: Output ONLY raw JSON matching the required schema.`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (GEMMA_API_KEY) {
+    headers["Authorization"] = `Bearer ${GEMMA_API_KEY}`;
+  }
+
+  // Detect whether this is an OpenAI-compatible endpoint or Ollama native API
+  const isOpenAICompatible = GEMMA_API_URL.includes("/v1") || GEMMA_API_URL.includes("groq") || GEMMA_API_URL.includes("together") || GEMMA_API_URL.includes("openrouter");
+
+  if (isOpenAICompatible) {
+    // OpenAI Chat Completions standard
+    const endpoint = GEMMA_API_URL.endsWith("/chat/completions")
+      ? GEMMA_API_URL
+      : `${GEMMA_API_URL}/chat/completions`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: GEMMA_MODEL,
+          messages: [
+            { role: "system", content: SYSTEM_INSTRUCTION },
+            { role: "user", content: promptContent }
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.3,
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Gemma OpenAI endpoint error (${response.status}): ${errorText}`);
+      }
+
+      const data: any = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error("Empty response received from Gemma OpenAI endpoint");
+      }
+      return content;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  // Native Ollama API: POST /api/chat with fallback to /api/generate
+  const ollamaChatEndpoint = `${GEMMA_API_URL}/api/chat`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const response = await fetch(ollamaChatEndpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: GEMMA_MODEL,
+        messages: [
+          { role: "system", content: SYSTEM_INSTRUCTION },
+          { role: "user", content: promptContent }
+        ],
+        format: "json",
+        stream: false,
+        options: {
+          temperature: 0.3,
+        }
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      // If 404 or unsupported endpoint, try Ollama /v1/chat/completions
+      if (response.status === 404) {
+        const altEndpoint = `${GEMMA_API_URL}/v1/chat/completions`;
+        const altResponse = await fetch(altEndpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: GEMMA_MODEL,
+            messages: [
+              { role: "system", content: SYSTEM_INSTRUCTION },
+              { role: "user", content: promptContent }
+            ],
+            temperature: 0.3,
+          })
+        });
+        if (altResponse.ok) {
+          const altData: any = await altResponse.json();
+          return altData.choices?.[0]?.message?.content || "";
+        }
+      }
+      const errText = await response.text();
+      throw new Error(`Ollama API error (${response.status}): ${errText}`);
+    }
+
+    const data: any = await response.json();
+    return data.message?.content || "";
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error(`Gemma model inference timed out after 60 seconds. Ollama may be loading model '${GEMMA_MODEL}' into memory.`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Extracts and validates JSON from Gemma output
+ */
+function parseGemmaOutput(rawText: string): any {
+  if (!rawText || typeof rawText !== "string") {
+    throw new Error("Empty response from Gemma model.");
+  }
+
+  let cleaned = rawText.trim();
+  // Strip Markdown JSON codeblocks if present
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  }
+
+  // Find first { and last }
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err: any) {
+    throw new Error(`Failed to parse Gemma output as JSON: ${err.message}. Raw output: ${cleaned.slice(0, 200)}...`);
+  }
+
+  // Ensure root properties exist
+  if (typeof parsed.isComplete !== "boolean") {
+    parsed.isComplete = Boolean(parsed.travelPlan);
+  }
+
+  if (!parsed.reply || typeof parsed.reply !== "string") {
+    parsed.reply = parsed.isComplete 
+      ? "Here is your customized travel itinerary!" 
+      : "Could you tell me a bit more about your travel plans?";
+  }
+
+  if (!parsed.collectedData || typeof parsed.collectedData !== "object") {
+    parsed.collectedData = {};
+  }
+
+  // If complete, ensure travelPlan structure is safe and complete
+  if (parsed.isComplete && parsed.travelPlan) {
+    const plan = parsed.travelPlan;
+    plan.destination = plan.destination || parsed.collectedData.destination || "Destination";
+    plan.budget = Number(plan.budget) || 50000;
+    plan.duration = Number(plan.duration) || 5;
+    plan.travelers = Number(plan.travelers) || 2;
+    plan.experience = Array.isArray(plan.experience) ? plan.experience : ["Travel"];
+    plan.destinations = Array.isArray(plan.destinations) ? plan.destinations : [];
+    plan.itinerary = Array.isArray(plan.itinerary) ? plan.itinerary : [];
+    
+    // Ensure budgetBreakdown exists
+    if (!plan.budgetBreakdown || typeof plan.budgetBreakdown !== "object") {
+      const b = plan.budget;
+      plan.budgetBreakdown = {
+        transport: Math.round(b * 0.25),
+        hotel: Math.round(b * 0.35),
+        food: Math.round(b * 0.18),
+        activities: Math.round(b * 0.10),
+        shopping: Math.round(b * 0.07),
+        emergency: Math.round(b * 0.05),
+        totalBudget: b,
+        estimatedCost: b,
+        remainingBudget: 0
+      };
+    }
+
+    if (!Array.isArray(plan.packingList)) plan.packingList = [];
+    if (!Array.isArray(plan.hiddenGems)) plan.hiddenGems = [];
+    if (!Array.isArray(plan.restaurants)) plan.restaurants = [];
+    if (!Array.isArray(plan.mustTryFoods)) plan.mustTryFoods = [];
+    if (!Array.isArray(plan.safetyTips)) plan.safetyTips = [];
+    if (!Array.isArray(plan.scamsToAvoid)) plan.scamsToAvoid = [];
+    if (!Array.isArray(plan.transportationTips)) plan.transportationTips = [];
+    if (!Array.isArray(plan.moneySavingTips)) plan.moneySavingTips = [];
+    plan.weatherAdvice = plan.weatherAdvice || "Check local seasonal weather before departure.";
+    plan.bestVisitingHours = plan.bestVisitingHours || "Early morning and late afternoon.";
+  }
+
+  return parsed;
+}
+
+// Health check endpoint for Gemma / Ollama status
+app.get("/api/model/status", async (req: Request, res: Response) => {
+  try {
+    const isOpenAI = GEMMA_API_URL.includes("/v1");
+    const checkEndpoint = isOpenAI ? `${GEMMA_API_URL}/models` : `${GEMMA_API_URL}/api/tags`;
+    
+    const headers: Record<string, string> = {};
+    if (GEMMA_API_KEY) headers["Authorization"] = `Bearer ${GEMMA_API_KEY}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    const testRes = await fetch(checkEndpoint, { headers, signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (testRes.ok) {
+      return res.json({
+        status: "connected",
+        endpoint: GEMMA_API_URL,
+        model: GEMMA_MODEL,
+        ready: true
+      });
+    }
+
+    return res.json({
+      status: "unreachable",
+      endpoint: GEMMA_API_URL,
+      model: GEMMA_MODEL,
+      ready: false,
+      message: `Endpoint returned HTTP ${testRes.status}`
+    });
+  } catch (err: any) {
+    return res.json({
+      status: "disconnected",
+      endpoint: GEMMA_API_URL,
+      model: GEMMA_MODEL,
+      ready: false,
+      message: err.message
+    });
+  }
+});
+
+// API Endpoint for Chat Analysis & Content Generation via Gemma
 app.post("/api/chat", async (req: Request, res: Response) => {
   const { messages, currentParams } = req.body;
 
@@ -252,300 +377,39 @@ app.post("/api/chat", async (req: Request, res: Response) => {
   }
 
   try {
-    const ai = getGenAI();
+    console.log(`[Gemma AI] Request received with ${messages.length} messages. Calling ${GEMMA_MODEL} at ${GEMMA_API_URL}...`);
+    
+    const rawGemmaOutput = await queryGemma(messages, currentParams);
+    const parsedResult = parseGemmaOutput(rawGemmaOutput);
 
-    // Format the conversation history into a comprehensive prompt
-    const conversationPrompt = messages.map(m => {
-      return `${m.role === "user" ? "User" : "TravelGo.AI Assistant"}: ${m.content}`;
-    }).join("\n\n");
-
-    const fullPrompt = `
-Here is the current state of variables collected so far:
-${JSON.stringify(currentParams || {}, null, 2)}
-
-Below is the transcript of the entire conversation so far. Analyze it, update the collected variables, decide if we have all 5 variables (Destination, Budget, Duration, Travelers, Experience), and respond with the requested JSON format.
-
-Conversation history:
-${conversationPrompt}
-
-Please produce a response according to the defined schema.
-`;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: fullPrompt,
-      config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        responseMimeType: "application/json",
-        responseSchema: CHAT_RESPONSE_SCHEMA,
-      },
-    });
-
-    const resultText = response.text;
-    if (!resultText) {
-      throw new Error("Empty response from Gemini API");
-    }
-
-    const parsedResult = JSON.parse(resultText);
+    console.log(`[Gemma AI] Successfully parsed model response. isComplete=${parsedResult.isComplete}`);
     return res.json(parsedResult);
 
   } catch (error: any) {
-    console.error("Error calling Gemini API:", error);
-    
-    // Provide a beautiful, highly detailed mock response if the key is missing or failed
-    // This keeps the app completely functional and impressive even in preview environments without API keys.
-    const isMockRequired = true; // Always fall back on failure to ensure maximum robustness!
+    console.error("[Gemma AI] Error processing request:", error.message);
 
-    if (isMockRequired) {
-      console.log("Generating fallback smart mock response for seamless operation.");
-      
-      // Look at the latest message to see if we can simulate the conversational flow or finalize
-      const lastUserMsg = [...messages].reverse().find(m => m.role === "user")?.content || "";
-      const text = lastUserMsg.toLowerCase();
+    // Provide structured error detailing why Gemma failed (e.g. Ollama connection or model not loaded)
+    const isConnRefused = error.message?.includes("ECONNREFUSED") || error.message?.includes("fetch failed");
+    const isTimeout = error.message?.includes("timed out");
 
-      // Simple heuristic state machine for mock backup
-      const tempParams = { ...currentParams };
-      
-      // 1. Try to extract destination
-      if (!tempParams.destination) {
-        if (text.includes("go to") || text.includes("visit") || text.includes("travel to")) {
-          const match = lastUserMsg.match(/(?:go to|visit|travel to)\s+([A-Za-z\s]+)/i);
-          if (match) tempParams.destination = match[1].trim();
-        } else if (text.length > 2 && text.length < 20 && !text.includes("yes") && !text.includes("no") && isNaN(Number(text))) {
-          tempParams.destination = lastUserMsg.trim();
-        }
-      }
-
-      // 2. Try to extract budget
-      if (!tempParams.budget) {
-        const budgetMatch = text.match(/(\d+)\s*(?:k|thousand|lakh|rs|rupees|₹)?/);
-        if (budgetMatch) {
-          let val = parseInt(budgetMatch[1]);
-          if (text.includes("k")) val *= 1000;
-          tempParams.budget = `₹${val.toLocaleString('en-IN')}`;
-        }
-      }
-
-      // 3. Try to extract duration
-      if (!tempParams.duration) {
-        const durMatch = text.match(/(\d+)\s*(?:day|night)/);
-        if (durMatch) {
-          tempParams.duration = parseInt(durMatch[1]);
-        }
-      }
-
-      // 4. Try to extract travelers
-      if (!tempParams.travelers) {
-        const travMatch = text.match(/(\d+)\s*(?:people|person|traveler|adult|friend)/);
-        if (travMatch) {
-          tempParams.travelers = parseInt(travMatch[1]);
-        } else if (text.includes("alone") || text.includes("solo") || text.includes("myself")) {
-          tempParams.travelers = 1;
-        }
-      }
-
-      // 5. Try to extract experience
-      if (!tempParams.experience || tempParams.experience.length === 0) {
-        const tags: string[] = [];
-        if (text.includes("adventure") || text.includes("trek") || text.includes("hike")) tags.push("Adventure");
-        if (text.includes("beach") || text.includes("sea") || text.includes("ocean") || text.includes("coast")) tags.push("Beaches");
-        if (text.includes("mountain") || text.includes("hill") || text.includes("snow")) tags.push("Mountains");
-        if (text.includes("nature") || text.includes("forest") || text.includes("wildlife")) tags.push("Nature");
-        if (text.includes("food") || text.includes("eat") || text.includes("restaurant") || text.includes("cuisine")) tags.push("Food");
-        if (text.includes("shop") || text.includes("market") || text.includes("bazaar")) tags.push("Shopping");
-        if (text.includes("luxury") || text.includes("five star") || text.includes("resort")) tags.push("Luxury");
-        if (text.includes("budget") || text.includes("cheap") || text.includes("pocket friendly")) tags.push("Budget");
-        if (text.includes("family") || text.includes("kids")) tags.push("Family");
-        if (text.includes("solo") || text.includes("alone")) tags.push("Solo");
-        
-        if (tags.length > 0) {
-          tempParams.experience = tags;
-        }
-      }
-
-      // Check what is missing and construct next reply
-      if (!tempParams.destination) {
-        return res.json({
-          isComplete: false,
-          collectedData: tempParams,
-          reply: "✈️ That sounds wonderful! To get started, where would you like to travel? (e.g. Goa, Ladakh, Paris, Bali)"
-        });
-      } else if (!tempParams.budget) {
-        return res.json({
-          isComplete: false,
-          collectedData: tempParams,
-          reply: `🌍 Awesome, ${tempParams.destination} is a fantastic choice! What is your total budget for this trip in Indian Rupees (₹)?`
-        });
-      } else if (!tempParams.duration) {
-        return res.json({
-          isComplete: false,
-          collectedData: tempParams,
-          reply: "📅 Perfect. How many days are you planning to travel?"
-        });
-      } else if (!tempParams.travelers) {
-        return res.json({
-          isComplete: false,
-          collectedData: tempParams,
-          reply: "👥 Got it! How many people will be travelling on this journey?"
-        });
-      } else if (!tempParams.experience || tempParams.experience.length === 0) {
-        return res.json({
-          isComplete: false,
-          collectedData: tempParams,
-          reply: "🎒 Almost there! What type of experience are you looking for? (You can choose multiple like Adventure, Beaches, Nature, Food, Luxury, Solo, Family)"
-        });
-      } else {
-        // Complete! Generate a stunning mock travel plan
-        const dest = tempParams.destination || "Goa";
-        const dur = tempParams.duration || 4;
-        const trav = tempParams.travelers || 2;
-        const budgetNum = parseInt(String(tempParams.budget).replace(/[^\d]/g, '')) || 45000;
-        const exp = tempParams.experience || ["Nature", "Beaches", "Food"];
-
-        // Generate daywise itinerary
-        const itinerary = Array.from({ length: dur }).map((_, i) => {
-          const day = i + 1;
-          return {
-            day,
-            title: `Day ${day}: Immersive ${dest} Exploration`,
-            morning: {
-              activity: `Watch the majestic sunrise and take a walk around the prominent local scenic routes.`,
-              attraction: `Scenic Heritage Trail & Viewpoint`,
-              food: `Classic Local breakfast: Savory delicacies at a traditional café.`
-            },
-            afternoon: {
-              activity: `Explore historical highlights, cultural museums, and engage in local hands-on craft workshops.`,
-              attraction: `Cultural Heritage Quarter & Craft Market`,
-              food: `Authentic regional lunch featuring local signature dishes.`
-            },
-            evening: {
-              activity: `Relax with a beautiful sunset cruise followed by a vibrant walk through bustling local night markets.`,
-              attraction: `Panoramic Sunset Deck & Coastal Promenade`,
-              food: `Delightful dinner at an award-winning beachside or rooftop bistro.`
-            },
-            dailyExpense: Math.round((budgetNum * 0.15) / dur)
-          };
-        });
-
-        // Generate budget breakdown
-        const transport = Math.round(budgetNum * 0.25);
-        const hotel = Math.round(budgetNum * 0.35);
-        const food = Math.round(budgetNum * 0.18);
-        const activities = Math.round(budgetNum * 0.10);
-        const shopping = Math.round(budgetNum * 0.07);
-        const emergency = Math.round(budgetNum * 0.05);
-        const estimatedCost = transport + hotel + food + activities + shopping + emergency;
-
-        const travelPlan = {
-          destination: dest,
-          budget: budgetNum,
-          duration: dur,
-          travelers: trav,
-          experience: exp,
-          destinations: [
-            {
-              name: `${dest} Highlights & Heritage`,
-              description: `A carefully balanced mix of top-rated landmarks, cultural quarters, and breathtaking viewpoints.`,
-              reason: `Optimized to provide the absolute best value for ${dur} days, focusing on your preference for ${exp.join(" & ")}.`,
-              matchingScore: 97
-            },
-            {
-              name: `Serene Off-beat Retreats`,
-              description: `Tranquil nature reserves and hidden beaches away from the main tourist crowds.`,
-              reason: `Fits perfectly within your ₹${budgetNum.toLocaleString('en-IN')} budget, offering highly economical yet breathtaking sights.`,
-              matchingScore: 92
-            }
-          ],
-          itinerary,
-          budgetBreakdown: {
-            transport,
-            hotel,
-            food,
-            activities,
-            shopping,
-            emergency,
-            totalBudget: budgetNum,
-            estimatedCost,
-            remainingBudget: budgetNum - estimatedCost
-          },
-          packingList: [
-            {
-              category: "Clothing",
-              items: [
-                { id: "p1", name: "Breathable comfortable linen shirts/dresses", packed: false },
-                { id: "p2", name: "Light jacket or cardigan for cooler evenings", packed: false },
-                { id: "p3", name: "Sturdy walking shoes or hiking boots", packed: false },
-                { id: "p4", name: "Swimwear and quick-dry microfibre towel", packed: false }
-              ]
-            },
-            {
-              category: "Electronics",
-              items: [
-                { id: "p5", name: "Universal travel adapter and power bank", packed: false },
-                { id: "p6", name: "Camera with extra SD card/chargers", packed: false },
-                { id: "p7", name: "Waterproof phone pouch", packed: false }
-              ]
-            },
-            {
-              category: "Documents & Essentials",
-              items: [
-                { id: "p8", name: "Printed copies of boarding passes & hotel booking vouchers", packed: false },
-                { id: "p9", name: "Government ID / Passport & copy of insurance", packed: false },
-                { id: "p10", name: "Emergency cash (INR) and travel debit card", packed: false }
-              ]
-            },
-            {
-              category: "Toiletries & Health",
-              items: [
-                { id: "p11", name: "High SPF reef-safe sunscreen & lip balm", packed: false },
-                { id: "p12", name: "Mosquito repellent spray", packed: false },
-                { id: "p13", name: "Personal first-aid kit with basic medication", packed: false }
-              ]
-            }
-          ],
-          hiddenGems: [
-            { name: "The Whispering Caves", description: "A secluded natural cavern system with stunning light rays peeking through, best visited in the early morning." },
-            { name: "Old Town Hidden Alleyways", description: "Charming historic cobblestone pathways filled with local artisan shops and wall-murals away from tourist maps." }
-          ],
-          restaurants: [
-            { name: "La Brasserie Local", cuisine: "Traditional fusion", priceRange: "Medium", mustTry: "Signature Seafood platter / Roasted Spiced Squash" },
-            { name: "The Heritage Kitchen", cuisine: "Local regional specialties", priceRange: "Low", mustTry: "Traditional slow-cooked curry with handmade flatbreads" }
-          ],
-          mustTryFoods: [
-            { name: "Spiced Coastal Stew", description: "A heartwarming broth infused with coconut milk, native spices, and freshly harvested ingredients." },
-            { name: "Artisanal Sweet Pastries", description: "Flaky crust tarts stuffed with sweet cardamom and local fruit jams, baked in traditional clay wood-fires." }
-          ],
-          safetyTips: [
-            "Always check taxi meters or agree on a fare upfront before boarding.",
-            "Keep your valuables secure in a cross-body bag in busy night markets.",
-            "Drink bottled or filtered water exclusively."
-          ],
-          scamsToAvoid: [
-            "Politely decline overly persistent guides who offer 'free tours' only to lead you into expensive souvenir shops.",
-            "Avoid currency exchanges located directly next to tourist landmarks as they charge steep commissions."
-          ],
-          transportationTips: [
-            "Renting a local automatic scooter or e-bike is the most cost-effective way to zip around.",
-            "Use popular localized rideshare apps for transparent, safe pricing."
-          ],
-          weatherAdvice: "Expect beautifully warm days with soft cool breezes in the evenings. Carrying a light umbrella or windcheater is highly recommended just in case of quick passing showers.",
-          bestVisitingHours: "Visit major landmarks from 7:30 AM to 9:30 AM to beat both the midday sun and tourist buses. Night markets are best experienced after 7:00 PM.",
-          moneySavingTips: [
-            "Purchase a tourist sightseeing pass which bundles entries to 10+ major attractions for 40% off.",
-            "Indulge in certified, clean street-food stalls for lunch – they are incredibly delicious and cost a fraction of restaurant prices."
-          ]
-        };
-
-        return res.json({
-          isComplete: true,
-          collectedData: tempParams,
-          reply: `🎉 Superb! I have gathered all your preferences and generated your personalized travel plan for **${dest}**! Let's check out your bespoke itinerary below.`,
-          travelPlan
-        });
-      }
+    let userFriendlyReply = "⚠️ Unable to contact the Gemma model.";
+    if (isConnRefused) {
+      userFriendlyReply = `⚠️ Could not connect to Ollama at ${GEMMA_API_URL}. Please ensure your local Ollama server is running (e.g., run 'ollama run ${GEMMA_MODEL}' in your terminal) or configure GEMMA_API_URL.`;
+    } else if (isTimeout) {
+      userFriendlyReply = `⏳ The Gemma model took too long to respond. The model may be initializing in memory. Please send your message again in a moment.`;
+    } else {
+      userFriendlyReply = `⚠️ Gemma Error: ${error.message}`;
     }
 
-    return res.status(500).json({ error: "Failed to generate travel plan.", details: error.message });
+    return res.status(503).json({
+      error: "Gemma inference failed",
+      reply: userFriendlyReply,
+      details: error.message,
+      endpoint: GEMMA_API_URL,
+      model: GEMMA_MODEL,
+      isComplete: false,
+      collectedData: currentParams || {}
+    });
   }
 });
 
@@ -569,5 +433,5 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
+  console.log(`TravelGo.AI Server running on http://0.0.0.0:${PORT}`);
 });
